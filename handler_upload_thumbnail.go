@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -28,10 +31,60 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	// implement the upload here
+	const maxMemory = 10 * 1024 * 1024
+	err = r.ParseMultipartForm(maxMemory)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		return
+	}
 
-	respondWithJSON(w, http.StatusOK, struct{}{})
+	file, header, err := r.FormFile("thumbnail")
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
+		return
+	}
+	defer file.Close()
+
+	vidType, err := getType(header.Header.Get("Content-Type"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Data type not found", nil)
+		return
+	}
+
+	video, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Invalid vidID", err)
+		return
+	}
+
+	if video.UserID != userID {
+		respondWithError(w, http.StatusUnauthorized, "You don't own the video", nil)
+		return
+	}
+
+	fileName := fmt.Sprintf("%v.%v", videoID, vidType)
+	fullPath := filepath.Join(cfg.assetsRoot, fileName)
+
+	newFile, err := os.Create(fullPath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not create file", err)
+		return
+	}
+	defer newFile.Close()
+
+	_, err = io.Copy(newFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not copy to server", err)
+		return
+	}
+
+	vidURL := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoID, vidType)
+	video.ThumbnailURL = &vidURL
+
+	cfg.db.UpdateVideo(video)
+
+	respondWithJSON(w, http.StatusOK, video)
 }
