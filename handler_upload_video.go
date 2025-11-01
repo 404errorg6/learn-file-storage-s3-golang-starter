@@ -2,7 +2,7 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"mime"
@@ -70,6 +70,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	defer os.Remove(tmpFile.Name())
 	defer tmpFile.Close()
 
+	_, err = io.Copy(tmpFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not copy to tmp file", err)
+		return
+	}
+
 	aspectRatio := "other"
 	dimension, err := getVideoAspectRatio(tmpFile.Name())
 	if err != nil {
@@ -83,15 +89,21 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		aspectRatio = "portrait"
 	}
 
-	_, err = io.Copy(tmpFile, file)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Could not copy to tmp file", err)
-		return
-	}
-
 	_, err = tmpFile.Seek(0, io.SeekStart)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not set pointer of tmp file to start", err)
+		return
+	}
+
+	processedFileName, err := processVideoForFastStart(tmpFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not process video", err)
+		return
+	}
+
+	processedFile, err := os.Open(processedFileName)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not read the processed file", err)
 		return
 	}
 
@@ -102,13 +114,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	random := hex.EncodeToString(randomByte)
+	random := base64.URLEncoding.EncodeToString(randomByte)
 	serverFileName := fmt.Sprintf("%v/%v.%v", aspectRatio, random, vidType)
 
 	params := s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &serverFileName,
-		Body:        tmpFile,
+		Body:        processedFile,
 		ContentType: &mediaType,
 	}
 
@@ -118,7 +130,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	vidURL := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, serverFileName)
+	vidURL := fmt.Sprintf("%v,%v", cfg.s3Bucket, serverFileName)
 	video.VideoURL = &vidURL
-	cfg.db.UpdateVideo(video)
+	err = cfg.db.UpdateVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not update video", err)
+		return
+	}
+
+	signedVid, err := cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not create signed URL", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, signedVid)
 }
