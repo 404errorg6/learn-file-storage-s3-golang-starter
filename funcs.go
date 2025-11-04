@@ -2,28 +2,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os/exec"
 	"strings"
-	"time"
-
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
-
-func genenratePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
-	singedClient := s3.NewPresignClient(s3Client)
-	params := s3.GetObjectInput{
-		Bucket: &bucket,
-		Key:    &key,
-	}
-
-	request, err := singedClient.PresignGetObject(context.Background(), &params, s3.WithPresignExpires(expireTime))
-	if err != nil {
-		return "", err
-	}
-	return request.URL, nil
-}
 
 func processVideoForFastStart(filePath string) (string, error) {
 	newFile := filePath + ".processing"
